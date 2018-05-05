@@ -368,7 +368,7 @@ if __name__ == "__main__":
     WARNING_COUNTER = 0
     display = True
     use_arduino = True
-    use_obd = True
+    use_obd = False # not enough power from charger at the moment
     car_flip = True
     logCamera = True
     
