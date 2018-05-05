@@ -471,3 +471,6 @@ sudo shutdown -h now
 workon cv
 ls
 source activate cv
+ls
+cat on_reboot.sh
+sudo reboot
