@@ -9,6 +9,17 @@ import argparse
 import imutils
 import dlib
 import cv2
+import serial
+import sys
+import glob
+import time
+from imutils.video import VideoStream
+from imutils import face_utils
+import numpy as np
+import argparse
+import imutils
+import dlib
+import cv2
 import obd
 import os
 
@@ -18,9 +29,10 @@ machine = ""
 OKAY = 0
 WARNING = 1
 ALARM = 2
+face_found = False
 STATE = OKAY # 0: okay, 1: warning, 2: alarm
 WARNING_COUNTER = 0
-WARNING_THRESHOLD = 2 # number of warnings to allow before alarm instead
+WARNING_THRESHOLD = 1 # number of warnings to allow before alarm instead
 
 available_ports = []
 
@@ -47,7 +59,6 @@ closeStart = None
 openStart = None
 CLOSE_THRESHOLD = 2 # number of seconds to allow eyes closed before warning/alarm
 OPEN_THRESHOLD = 0.2 # number of seconds to confirm eyes open before dismissing close timer
-ALARM_ON = False
 
 FILE_OUTPUT = ''
 
@@ -65,6 +76,7 @@ def set_single_file():
 def set_multi_file():
     global FILE_OUTPUT
     FILE_OUTPUT = 'output_{}.avi'.format(int(time.time()))
+
 
 def get_available_serial_ports():
     """ Lists serial port names
@@ -147,7 +159,7 @@ def initialize_Arduino():
         print("ARDUINO INITIALIZE: FAIL")
 
 def initialize_camera(verbose=False, logCamera=True):
-    global detector, predictor, lStart, lEnd, rStart, rEnd, VS, machine, out
+    global detector, predictor, lStart, lEnd, rStart, rEnd, VS, machine
     if verbose: print("CAMERA INITIALIZE: Loading facial landmark predictor...")
     # load Haar cascade & create facial landmark predictor
     detector = cv2.CascadeClassifier(args["cascade"])
@@ -167,17 +179,6 @@ def initialize_camera(verbose=False, logCamera=True):
         print("CAMERA INITIALIZE: SUCCESS")
     else:
         print("CAMERA INITIALIZE: FAIL")
-    
-    # get first frame, resize and get shape for outfile parameters
-    frame = VS.read()
-    frame = imutils.resize(frame, width=500)
-    frame_height = frame.shape[0]
-    
-    # Define the codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    
-    # the video writer object
-    out = cv2.VideoWriter(FILE_OUTPUT,fourcc, 20.0, (500,frame_height))
 
 def checkForOBD(OBDPortName='/dev/ttyUSB1'):
     global available_ports
@@ -202,26 +203,37 @@ def initialize_OBD():
             print("OBD INITIALIZE: FAIL")
 
 def handleArduino(verbose=False):
-    global STATE, OKAY, WARNING, ALARM, buttonPressStart, WARNING_COUNTER
+    global STATE, OKAY, WARNING, ALARM, face_found, buttonPressStart, WARNING_COUNTER
     if STATE == OKAY:
-        ARDUINO_PORT.write(b'g')
+        if not face_found:
+            ARDUINO_PORT.write(b'f')
+        else:
+            ARDUINO_PORT.write(b'g')
     elif STATE == WARNING:
         print('WARNING DETECTED~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ {}'.format(WARNING_COUNTER))
         ARDUINO_PORT.write(b'y')
     elif STATE == ALARM:
         ARDUINO_PORT.write(b'r')
         data = ARDUINO_PORT.readline().rstrip()
-        if data == b'button_press':
-            buttonPressStart = time.time()
-        elif data == b'button_release' and buttonPressStart is not None:
-            duration = time.time() - buttonPressStart
-            if duration > BUTTON_THRESHOLD:
-                if verbose: print('HOLD LENGTH = {} sec. ALARM DISMISSED'.format(duration))
+        if data == b'p':
+            if buttonPressStart is None: # first time pressing the button
+                buttonPressStart = time.time()
+            elif time.time() - buttonPressStart >= BUTTON_THRESHOLD:
                 STATE = OKAY
                 WARNING_COUNTER = 0
-                # TODO: stop alarm sound
-            else:
-                if verbose: print('HOLD LENGTH = {} sec. ALARM NOT DISMISSED'.format(duration))
+                buttonPressStart = None
+        else:
+            buttonPressStart = None
+        # if data == b'button_press':
+        #     buttonPressStart = time.time()
+        # elif data == b'button_release' and buttonPressStart is not None:
+        #     duration = time.time() - buttonPressStart
+        #     if duration > BUTTON_THRESHOLD:
+        #         if verbose: print('HOLD LENGTH = {} sec. ALARM DISMISSED'.format(duration))
+        #         STATE = OKAY
+        #         WARNING_COUNTER = 0
+        #     else:
+        #         if verbose: print('HOLD LENGTH = {} sec. ALARM NOT DISMISSED'.format(duration))
 
 def eye_aspect_ratio(eye):
 	# compute the euclidean distances between the two sets of
@@ -239,12 +251,11 @@ def eye_aspect_ratio(eye):
 	# return the eye aspect ratio
 	return ear
 
-def handleCamera(verbose=False, display=False,recording=False, car_flip=False):
+def handleCamera(verbose=False, display=False, car_flip=False):
     global VS, detector, predictor
     global lStart, lEnd, rStart, rEnd, EYE_AR_THRESH
     global CLOSE_THRESHOLD, OPEN_THRESHOLD
-    global STATE, OKAY, WARNING, ALARM, closeStart, openStart, WARNING_COUNTER
-    global out
+    global STATE, OKAY, WARNING, ALARM, face_found, closeStart, openStart, WARNING_COUNTER
 
     if verbose:
         if STATE == WARNING:
@@ -255,14 +266,13 @@ def handleCamera(verbose=False, display=False,recording=False, car_flip=False):
     # grab frame, resize, and convert to grayscale
     frame = VS.read()
     frame = imutils.resize(frame, width=500)
-    # if in car, need to mount cam upside down, so flip frame
-    if car_flip:
-        frame = cv2.flip(frame,-1)    
+    if car_flip: frame = cv2.flip(frame, -1)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     # detect faces in the grayscale frame
     faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30), flags=cv2.CASCADE_SCALE_IMAGE)
-    # loop over all detected faces
+    # get largest face
     if len(faces) > 0:
+        face_found = True
         faceAreas = [w*h for (x,y,w,h) in faces]
         (x,y,w,h) = faces[np.argmax(faceAreas)] # bind x, y, w, and h to the largest face
         # construct a dlib rectable from Haar cascade bounding box
@@ -311,34 +321,34 @@ def handleCamera(verbose=False, display=False,recording=False, car_flip=False):
                     openStart = time.time()  # start timer for eyes closed
 
         if display:
-            cv2.putText(frame, "EAR: {:.3f}".format(averageEAR), (300, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            if STATE==ALARM:
+            cv2.putText(frame, "EAR: {:.3f}".format(averageEAR), (300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            if STATE == ALARM:
                 cv2.putText(frame, "DROWSINESS ALERT!", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            if STATE==WARNING:
+            if STATE == WARNING:
                 cv2.putText(frame, "DROWSINESS WARNING!", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)        
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
             cv2.imshow("Frame", frame)
             key = cv2.waitKey(1) & 0xFF
-        if recording:
-            out.write(frame)  # recording the video to file
+    else:
+        face_found = False
+        print("NO FACE FOUND")
 
 def handleOBD():
     global OBD_PORT, speed
     speed = OBD_PORT.query(obd.commands.SPEED).value.magnitude
     print("SPEED: {}".format(speed)) # non-blocking, returns immediately
 
-def main(verbose=False, display=False, use_arduino=True, use_obd=True,recording=False, car_flip=False):
+def main(verbose=False, display=False, use_arduino=True, use_obd=True, car_flip=False):
     global STATE, OKAY, WARNING, ALARM, machine
 
     if machine == "linux": display = False
-    
+
     i = 0
     while (True):
         if not i % 100: print("STATE {}: {}".format(i, STATE))
         if VS:
-            handleCamera(verbose=verbose, display=display,recording=recording, car_flip=car_flip)
+            handleCamera(verbose=verbose, display=display, car_flip=car_flip)
         else:
             print("ERROR: CAMERA DISCONNECTED")
             break
@@ -368,31 +378,12 @@ if __name__ == "__main__":
     WARNING_COUNTER = 0
     display = True
     use_arduino = True
-    use_obd = False # not enough power from charger at the moment
-    car_flip = True
-    logCamera = True
-    
-    demo_mode = False  # just alter this if in demo mode
-    if demo_mode:
-        use_arduino = False
-        use_obd = False
-        car_flip = False
-        logCamera = False
-        WARNING_THRESHOLD = 10000 # so the code doesn't freeze at alarm state
-    
-    # choose either single or multi file recording
-    recording = True
-    record_single = False
-    record_multi = True
-    if record_single:
-        set_single_file()
-    if record_multi:
-        set_multi_file()
-    
+    use_obd = False
+    car_flip = False
+
     get_available_serial_ports()
-    initialize_camera(logCamera=logCamera)
+    initialize_camera(logCamera=False)
     if use_obd: initialize_OBD()
     if use_arduino: initialize_Arduino()
-    main(verbose=True, display=display, use_arduino=use_arduino, 
-    use_obd=use_obd,recording=recording, car_flip=car_flip)
+    main(verbose=True, display=display, use_arduino=use_arduino, use_obd=use_obd, car_flip=car_flip)
     terminate(display=display)
