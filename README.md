@@ -1,4 +1,4 @@
-# drowsycam
+# DrowsyCam
 
 
 DrowsyCam Project
