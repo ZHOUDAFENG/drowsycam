@@ -7,6 +7,9 @@ Aleo Mok (anm232@cornell.edu), Eric Nguyen (en274@cornell.edu), Samantha Yip (st
 
 Demo Video: https://youtu.be/HN94TDIt6s4
 
+Report with photos: https://docs.google.com/document/d/1VW8Zk33Bk4EfrYzjwv4a315gJ1eKAEU0KNdM_dFdml8/edit?usp=sharing
+
+
 Introduction
 
 The DrowsyCam product is a system that notifies a vehicle driver when they are falling asleep. Common use cases include long car trips and late-night driving. To implement this notification system, DrowsyCam uses computer vision to detect whether the driver’s eyes are open; if not, a visual and auditory signal (i.e., light and sound) is produced to wake the driver.
